@@ -72,8 +72,10 @@ ESP32-LED-Clock/
 ├── images/                      # 图片资源
 │   └── driver_board.png         # 驱动板实物图
 ├── pcb/                         # PCB 设计资料
-│   ├── PCB_PCB1_2026-06-01.pdf  # PCB 图纸
-│   └── SCH_Schematic1_2026-06-01.pdf  # 原理图
+│   ├── Netlist_Schematic1_2026-06-01.enet  # 原理图网表 (v1)
+│   ├── Netlist_Schematic1_2026-06-02.enet  # 原理图网表 (v2, 最新)
+│   ├── PCB_PCB1_2026-06-01.pdf             # PCB 图纸
+│   └── SCH_Schematic1_2026-06-01.pdf       # 原理图
 └── README.md
 ```
 
