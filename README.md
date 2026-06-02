@@ -67,8 +67,14 @@
 ```
 ESP32-LED-Clock/
 ├── firmware/                    # 固件代码
-│   └── ESP32_LED_Clock/         # Arduino 项目
-│       └── ESP32_LED_Clock.ino  # 主程序
+│   └── ESP32_LED_Clock/         # Arduino 项目（多文件结构）
+│       ├── ESP32_LED_Clock.ino  # 主程序（初始化、主循环、WiFi配网）
+│       ├── WiFiConfig.ino       # WiFi 配置功能（SmartConfig、AP配网）
+│       ├── TimeDisplay.ino      # 时间显示、农历、节日、老虎动画
+│       ├── Weather.ino          # 天气获取（和风天气 API）与显示
+│       ├── OLEDDriver.ino       # 显示驱动函数（位图、字符、数字）
+│       ├── Sound.ino            # 蜂鸣器音乐（整点报时）
+│       └── Config.ino           # 配置管理、NTP时间同步、传感器
 ├── images/                      # 图片资源
 │   └── driver_board.png         # 驱动板实物图
 ├── pcb/                         # PCB 设计资料
@@ -100,20 +106,32 @@ ESP32-LED-Clock/
 
 1. 安装 [Arduino IDE](https://www.arduino.cc/en/software)
 2. 在 Arduino IDE 中安装 ESP32 开发板支持包
-3. 安装所需库（通过库管理器）：
-   - `ESP32_HUB75_LED_MATRIX_PANEL_DMA_Display`
-   - `DHT sensor library`
-   - `ArduinoJson`
+3. 安装所需库：
+
+   **① ESP32_HUB75_LED_MATRIX_PANEL_DMA_Display**（核心库，驱动 Hub75 接口 LED 屏幕）
+   - 下载地址：[mrfaptastic/ESP32-HUB75-MatrixPanel-DMA](https://github.com/mrfaptastic/ESP32-HUB75-MatrixPanel-DMA)
+   - 安装方式：下载 ZIP → Arduino IDE → **项目 → 加载库 → 添加 .ZIP 库**
+   - 或通过库管理器搜索 `ESP32_HUB75_MATRIX_PANEL_DMA` 安装
+
+   **② DHT sensor library**（温湿度传感器）
+   - 通过库管理器搜索 `DHT sensor library` 安装
+
+   **③ ArduinoJson**（JSON 解析，用于天气 API）
+   - 通过库管理器搜索 `ArduinoJson` 安装
 
 ### 编译上传
 
-1. 打开 `firmware/ESP32_LED_Clock/ESP32_LED_Clock.ino`
-2. 选择开发板为 `ESP32 Dev Module`
-3. 点击 **上传** 按钮
+源码采用 **多文件结构**（7 个 .ino 文件），Arduino IDE 在编译时会**自动合并**同一目录下的所有 .ino 文件，因此只需打开主文件即可：
+
+1. 打开 `firmware/ESP32_LED_Clock/` 目录下的 **任意一个 .ino 文件**（推荐打开 `ESP32_LED_Clock.ino`）
+2. Arduino IDE 会自动加载该目录下的所有 .ino 文件，在标签页中显示
+3. 选择开发板为 `ESP32 Dev Module`
+4. 点击 **上传** 按钮
+
+> 💡 **提示**：Arduino IDE 会自动将 `ESP32_LED_Clock/` 目录下的所有 `.ino` 文件合并编译，无需手动添加每个文件。
 
 > ⚠️ **刷机方式说明**：本驱动板的 Type-C 接口**仅用于供电**，不支持直接刷机。需要通过排针接口（H2）外接 USB 转串口工具（如 CH340G、CP2102）进行程序上传：
 > - H2 排针：**TXD → USB 转串口的 RXD**，**RXD → USB 转串口的 TXD**，**GND → GND**
-> - 上传前需按住 **BOOT 按键**，点击上传后松开
 
 ### 📶 WiFi 配置（首次使用）
 
