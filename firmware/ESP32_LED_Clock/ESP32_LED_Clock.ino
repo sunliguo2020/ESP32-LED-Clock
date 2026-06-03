@@ -87,10 +87,18 @@ float humidity = 0.0;
 unsigned long lastSensorRead = 0;
 const unsigned long SENSOR_READ_INTERVAL = 2000;
 
-// WiFi 配置
-String wifiSSID = "";
-String wifiPassword = "";
+// WiFi 配置（支持多组）
+#define MAX_WIFI_NETWORKS 5
+
+struct WiFiNetwork {
+  String ssid;
+  String password;
+};
+
+WiFiNetwork wifiNetworks[MAX_WIFI_NETWORKS];
+int wifiNetworkCount = 0;
 bool wifiConfigured = false;
+int wifiCurrentAttempt = 0;  // 当前尝试的索引
 
 // ==================== 借鉴代码功能变量 ====================
 
@@ -139,11 +147,14 @@ void setupWiFi();
 void startConfigMode();
 void handleConfigPage();
 void handleSaveConfig();
+void handleDeleteConfig();
 void syncTime();
 void readSensor();
 uint16_t getRainbowColor(int index);
 void loadWiFiConfig();
 void saveWiFiConfig(const String& ssid, const String& password);
+void deleteWiFiConfig(int index);
+void tryNextWiFi();
 
 // 借鉴代码功能函数（实现在其他 .ino 文件中）
 void GetTime();
@@ -342,24 +353,100 @@ void loop() {
   delay(350);
 }
 
-// ==================== WiFi 配置存储 ====================
+// ==================== WiFi 配置存储（支持多组） ====================
 
 void loadWiFiConfig() {
-  wifiSSID = preferences.getString("ssid", "");
-  wifiPassword = preferences.getString("password", "");
-  wifiConfigured = (wifiSSID.length() > 0);
-  if (wifiConfigured) {
-    Serial.printf("Loaded WiFi config: SSID=%s\n", wifiSSID.c_str());
+  wifiNetworkCount = preferences.getInt("count", 0);
+  if (wifiNetworkCount > MAX_WIFI_NETWORKS) wifiNetworkCount = MAX_WIFI_NETWORKS;
+  
+  for (int i = 0; i < wifiNetworkCount; i++) {
+    String key_ssid = "ssid" + String(i);
+    String key_pass = "pass" + String(i);
+    wifiNetworks[i].ssid = preferences.getString(key_ssid.c_str(), "");
+    wifiNetworks[i].password = preferences.getString(key_pass.c_str(), "");
+    if (wifiNetworks[i].ssid.length() > 0) {
+      Serial.printf("Loaded WiFi[%d]: SSID=%s\n", i, wifiNetworks[i].ssid.c_str());
+    }
   }
+  
+  wifiConfigured = (wifiNetworkCount > 0);
+  wifiCurrentAttempt = 0;
 }
 
 void saveWiFiConfig(const String& ssid, const String& password) {
-  preferences.putString("ssid", ssid);
-  preferences.putString("password", password);
-  wifiSSID = ssid;
-  wifiPassword = password;
+  // 检查是否已存在相同 SSID
+  for (int i = 0; i < wifiNetworkCount; i++) {
+    if (wifiNetworks[i].ssid == ssid) {
+      // 更新密码
+      wifiNetworks[i].password = password;
+      String key_pass = "pass" + String(i);
+      preferences.putString(key_pass.c_str(), password);
+      Serial.printf("Updated WiFi[%d]: SSID=%s\n", i, ssid.c_str());
+      return;
+    }
+  }
+  
+  // 新增
+  if (wifiNetworkCount < MAX_WIFI_NETWORKS) {
+    int idx = wifiNetworkCount;
+    wifiNetworks[idx].ssid = ssid;
+    wifiNetworks[idx].password = password;
+    
+    String key_ssid = "ssid" + String(idx);
+    String key_pass = "pass" + String(idx);
+    preferences.putString(key_ssid.c_str(), ssid);
+    preferences.putString(key_pass.c_str(), password);
+    
+    wifiNetworkCount++;
+    preferences.putInt("count", wifiNetworkCount);
+    
+    Serial.printf("Saved WiFi[%d]: SSID=%s (total: %d)\n", idx, ssid.c_str(), wifiNetworkCount);
+  } else {
+    Serial.println("WiFi list full, overwriting oldest...");
+    // 覆盖最后一个
+    int idx = MAX_WIFI_NETWORKS - 1;
+    wifiNetworks[idx].ssid = ssid;
+    wifiNetworks[idx].password = password;
+    
+    String key_ssid = "ssid" + String(idx);
+    String key_pass = "pass" + String(idx);
+    preferences.putString(key_ssid.c_str(), ssid);
+    preferences.putString(key_pass.c_str(), password);
+    
+    Serial.printf("Overwrote WiFi[%d]: SSID=%s\n", idx, ssid.c_str());
+  }
+  
   wifiConfigured = true;
-  Serial.println(F("WiFi config saved!"));
+  wifiCurrentAttempt = 0;
+}
+
+void deleteWiFiConfig(int index) {
+  if (index < 0 || index >= wifiNetworkCount) return;
+  
+  // 后面的往前移
+  for (int i = index; i < wifiNetworkCount - 1; i++) {
+    wifiNetworks[i] = wifiNetworks[i + 1];
+  }
+  wifiNetworkCount--;
+  
+  // 重新保存所有
+  preferences.putInt("count", wifiNetworkCount);
+  for (int i = 0; i < wifiNetworkCount; i++) {
+    String key_ssid = "ssid" + String(i);
+    String key_pass = "pass" + String(i);
+    preferences.putString(key_ssid.c_str(), wifiNetworks[i].ssid);
+    preferences.putString(key_pass.c_str(), wifiNetworks[i].password);
+  }
+  // 清除多余的
+  String key_ssid = "ssid" + String(wifiNetworkCount);
+  String key_pass = "pass" + String(wifiNetworkCount);
+  preferences.remove(key_ssid.c_str());
+  preferences.remove(key_pass.c_str());
+  
+  wifiConfigured = (wifiNetworkCount > 0);
+  if (wifiCurrentAttempt >= wifiNetworkCount) wifiCurrentAttempt = 0;
+  
+  Serial.printf("Deleted WiFi[%d], remaining: %d\n", index, wifiNetworkCount);
 }
 
 // ==================== 配网模式 ====================
@@ -384,6 +471,16 @@ void startConfigMode() {
 
   server.on("/", handleConfigPage);
   server.on("/save", handleSaveConfig);
+  server.on("/delete", handleDeleteConfig);
+  server.on("/list", []() {
+    String json = "[";
+    for (int i = 0; i < wifiNetworkCount; i++) {
+      if (i > 0) json += ",";
+      json += "{\"index\":" + String(i) + ",\"ssid\":\"" + wifiNetworks[i].ssid + "\"}";
+    }
+    json += "]";
+    server.send(200, "application/json", json);
+  });
   server.begin();
   Serial.println(F("HTTP server started"));
 }
@@ -431,9 +528,27 @@ void handleConfigPage() {
       </div>
       <button type="submit" class="btn">保存并连接</button>
     </form>
-    <div class="info">配置成功后，设备将自动重启并连接 WiFi<br>如需重新配置，按住 BOOT 键重新上电</div>
+    <div id="savedList" style="margin-top:20px;"></div>
+    <div class="info">最多可保存 5 组 WiFi，连接时会依次尝试<br>如需重新配置，按住 BOOT 键重新上电</div>
   </div>
   <script>
+    function loadSavedList() {
+      fetch('/list').then(r=>r.json()).then(list=>{
+        var html = '<h3 style="font-size:14px;color:#aaa;margin-bottom:10px;">已保存的 WiFi ('+list.length+'/5)</h3>';
+        if(list.length===0){ html += '<div style="color:#666;font-size:12px;">暂无保存的 WiFi</div>'; }
+        list.forEach(function(n){
+          html += '<div style="display:flex;align-items:center;justify-content:space-between;background:#1a1a2e;padding:8px 12px;margin:4px 0;border:1px solid #0f3460;border-radius:5px;">';
+          html += '<span style="font-size:14px;">📶 '+n.ssid+'</span>';
+          html += '<button onclick="deleteWiFi('+n.index+')" style="background:#e94560;color:white;border:none;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:12px;">删除</button>';
+          html += '</div>';
+        });
+        document.getElementById('savedList').innerHTML = html;
+      });
+    }
+    function deleteWiFi(index) {
+      if(!confirm('确定删除此 WiFi 配置？')) return;
+      fetch('/delete?index='+index).then(r=>r.text()).then(function(){ loadSavedList(); });
+    }
     function scanWiFi() {
       var btn = event.target; btn.textContent = "⏳ 扫描中..."; btn.disabled = true;
       fetch('/scan').then(r=>r.json()).then(d=>{
@@ -445,6 +560,7 @@ void handleConfigPage() {
     }
     function selectWiFi(ssid) { document.getElementById('ssid').value = ssid; document.getElementById('password').focus(); }
     function validateForm() { var s = document.getElementById('ssid').value.trim(); if(s.length===0){alert('请输入 WiFi 名称');return false;} return true; }
+    loadSavedList();
   </script>
 </body>
 </html>
@@ -502,36 +618,90 @@ void handleSaveConfig() {
     display->setTextColor(display->color565(255, 255, 0));
     display->println("Restarting...");
     delay(3000);
-    preferences.clear();
+    // 不清除所有配置，只清除当前失败的
     ESP.restart();
   }
 }
 
-// ==================== WiFi 连接 ====================
+void handleDeleteConfig() {
+  if (server.hasArg("index")) {
+    int index = server.arg("index").toInt();
+    deleteWiFiConfig(index);
+    server.send(200, "text/plain", "deleted");
+  } else {
+    server.send(400, "text/plain", "missing index");
+  }
+}
 
-void setupWiFi() {
+// ==================== WiFi 连接（支持多组） ====================
+
+void tryNextWiFi() {
+  if (wifiNetworkCount == 0) return;
+  
+  // 尝试下一个
+  wifiCurrentAttempt = (wifiCurrentAttempt + 1) % wifiNetworkCount;
+  
   display->fillScreen(0);
   display->setCursor(0, 0);
   display->setTextColor(display->color565(255, 255, 0));
-  display->println("WiFi...");
+  display->printf("WiFi[%d/%d]\n", wifiCurrentAttempt + 1, wifiNetworkCount);
+  display->println(wifiNetworks[wifiCurrentAttempt].ssid.c_str());
+  
+  Serial.printf("Trying WiFi[%d/%d]: %s\n", 
+    wifiCurrentAttempt + 1, wifiNetworkCount, 
+    wifiNetworks[wifiCurrentAttempt].ssid.c_str());
+  
   WiFi.mode(WIFI_STA);
-  WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-    delay(500);
-    display->print(".");
-    attempts++;
+  WiFi.begin(wifiNetworks[wifiCurrentAttempt].ssid.c_str(), 
+             wifiNetworks[wifiCurrentAttempt].password.c_str());
+}
+
+void setupWiFi() {
+  if (wifiNetworkCount == 0) {
+    Serial.println("No WiFi networks to try!");
+    return;
   }
-  if (WiFi.status() == WL_CONNECTED) {
-    display->setTextColor(display->color565(0, 255, 0));
-    display->println("\nOK!");
-    Serial.print("Connected! IP: ");
-    Serial.println(WiFi.localIP());
-  } else {
-    display->setTextColor(display->color565(255, 0, 0));
-    display->println("\nFAIL");
-    Serial.println("WiFi connection failed!");
+  
+  // 从第一个开始尝试
+  wifiCurrentAttempt = 0;
+  
+  for (int attempt = 0; attempt < wifiNetworkCount; attempt++) {
+    display->fillScreen(0);
+    display->setCursor(0, 0);
+    display->setTextColor(display->color565(255, 255, 0));
+    display->printf("WiFi[%d/%d]\n", attempt + 1, wifiNetworkCount);
+    display->println(wifiNetworks[attempt].ssid.c_str());
+    
+    Serial.printf("Trying WiFi[%d/%d]: %s ... ", 
+      attempt + 1, wifiNetworkCount, 
+      wifiNetworks[attempt].ssid.c_str());
+    
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(wifiNetworks[attempt].ssid.c_str(), 
+               wifiNetworks[attempt].password.c_str());
+    
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 15) {
+      delay(500);
+      display->print(".");
+      attempts++;
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+      display->setTextColor(display->color565(0, 255, 0));
+      display->println("\nOK!");
+      Serial.println("Connected!");
+      Serial.printf("IP: %s\n", WiFi.localIP().toString().c_str());
+      wifiCurrentAttempt = attempt;
+      delay(1000);
+      return;
+    }
+    Serial.println("FAIL");
   }
+  
+  display->setTextColor(display->color565(255, 0, 0));
+  display->println("\nAll FAIL");
+  Serial.println("All WiFi networks failed!");
   delay(1000);
 }
 
